@@ -17,6 +17,11 @@ namespace NSQM.Data.Extensions
 			return encoding.GetBytes(json);
 		}
 
+		public static T ToStruct<T>(this ReadOnlySpan<byte> buffer, Encoding encoding) where T : struct
+		{
+			return JsonSerializer.Deserialize<T>(buffer);
+		}
+
 		public static T ToStruct<T>(this byte[] buffer, Encoding encoding) where T : struct
 		{
 			return JsonSerializer.Deserialize<T>(buffer);

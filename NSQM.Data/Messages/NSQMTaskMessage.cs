@@ -35,12 +35,12 @@ namespace NSQM.Data.Messages
 		[JsonInclude]
 		public UserType SenderType;
 
-		public static NSQMessage Build(Guid senderId, Guid fromId, Guid toId, string taskName, Guid taskId, string channelId, TaskStatus status, byte[] content, UserType addresseType, UserType senderType, Encoding encoding)
+		public static NSQMessage Build(Guid senderId, Guid fromId, Guid toId, string taskName, Guid taskId, string channelId, TaskStatus status, byte[] content, UserType addresseType, UserType senderType, Encoding encoding, bool isStreamed)
 		{
 			return new NSQMessage()
 			{
 				SenderId = senderId,
-				Type = MessageType.Task,
+				Type = isStreamed ? MessageType.TaskStream : MessageType.Task,
 				StructBuffer = new NSQMTaskMessage()
 				{
 					PhaseId = Guid.NewGuid(),

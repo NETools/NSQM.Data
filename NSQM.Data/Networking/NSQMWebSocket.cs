@@ -3,6 +3,7 @@ using NSQM.Data.Messages;
 using NSQM.Data.Model;
 using NSQM.Data.Model.Response;
 using System;
+using System.Buffers;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
@@ -21,6 +22,24 @@ namespace NSQM.Data.Networking
 
 		public event Action<Guid>? Disconnected;
 
+		public Action<string, LoggingType> Logger { get; set; } = (message, logginType) =>
+		{
+			switch (logginType)
+			{
+				case LoggingType.Info:
+					Console.ForegroundColor = ConsoleColor.Cyan;
+					break;
+				case LoggingType.Error:
+					Console.ForegroundColor = ConsoleColor.Red;
+					break;
+				case LoggingType.Warning:
+					Console.ForegroundColor = ConsoleColor.Yellow;
+					break;
+			}
+			Console.WriteLine(message);
+			Console.ForegroundColor = ConsoleColor.Gray;
+		};
+
 		public NSQMWebSocket(WebSocket webSocket)
 		{
 			Id = Guid.NewGuid();
@@ -29,38 +48,47 @@ namespace NSQM.Data.Networking
 
 		public async Task Start()
 		{
+			var frameBuffer = new byte[8192];
 			try
 			{
-				var lengthBuffer = new byte[4];
-				var receiveResult = await _webSocket.ReceiveAsync(lengthBuffer, CancellationToken.None);
-
-				int messageLength = BitConverter.ToInt32(lengthBuffer);
-
-				while (!receiveResult.CloseStatus.HasValue)
+				while (true)
 				{
-					var messageBuffer = new byte[messageLength];
-					receiveResult = await _webSocket.ReceiveAsync(messageBuffer, CancellationToken.None);
-
-					if (receiveResult.CloseStatus.HasValue)
+					try
 					{
-						return;
+						var receiveResult = await _webSocket.ReceiveAsync(frameBuffer.AsMemory(), CancellationToken.None);
+						int totalSize = receiveResult.Count;
+						while (!receiveResult.EndOfMessage && !_webSocket.CloseStatus.HasValue)
+						{
+							Array.Resize(ref frameBuffer, frameBuffer.Length * 2);
+							receiveResult = await _webSocket.ReceiveAsync(frameBuffer.AsMemory(totalSize..), CancellationToken.None);
+							totalSize += receiveResult.Count;
+							Logger?.Invoke("FrameBuffer length doubled", LoggingType.Info);
+						}
+
+						if (_webSocket.CloseStatus.HasValue)
+						{
+							Logger?.Invoke("Websocket has a close status", LoggingType.Warning);
+							return;
+						}
+
+						var message = new ReadOnlySpan<byte>(frameBuffer, 0, totalSize).ToStruct<NSQMessage>(Encoding.UTF8);
+						await ProcessMessage(message);
 					}
-
-					var message = messageBuffer.ToStruct<NSQMessage>(Encoding.UTF8);
-					await ProcessMessage(message);
-
-					lengthBuffer = new byte[4];
-					receiveResult = await _webSocket.ReceiveAsync(lengthBuffer, CancellationToken.None);
-
-					messageLength = BitConverter.ToInt32(lengthBuffer);
+					catch (Exception ex)
+					{
+						Logger?.Invoke($"Error occured on loop level: {ex.Message}", LoggingType.Error);
+						if (_webSocket.State == WebSocketState.Closed || _webSocket.State == WebSocketState.Aborted)
+							break;
+					}
 				}
 			}
 			catch (Exception ex)
 			{
-				Console.WriteLine(ex.Message);
+				Logger?.Invoke($"Error occured on method level: {ex.Message}", LoggingType.Error);
 			}
 			finally
 			{
+				Logger?.Invoke("Websocket closed", LoggingType.Info);
 				await Close();
 			}
 		}
@@ -68,10 +96,7 @@ namespace NSQM.Data.Networking
 		public async Task Send(NSQMessage message)
 		{
 			var messageBuffer = message.ToJsonBytes(Encoding.UTF8);
-			var lengthBuffer = BitConverter.GetBytes(messageBuffer.Length);
-
-			await _webSocket.SendAsync(lengthBuffer, WebSocketMessageType.Binary, false, CancellationToken.None);
-			await _webSocket.SendAsync(messageBuffer, WebSocketMessageType.Binary, false, CancellationToken.None);
+			await _webSocket.SendAsync(messageBuffer, WebSocketMessageType.Binary, true, CancellationToken.None);
 		}
 
 		public async Task<ApiResponseL3<T>?> SendAndReceive<T>(NSQMessage message, CancellationToken cancellationToken) 
@@ -82,7 +107,9 @@ namespace NSQM.Data.Networking
 			using var responseSemaphore = new ResponseSemaphore<NSQMInfoMessage>();
 			if (!_responseSemaphores.TryAdd(message.ConnectionId, responseSemaphore))
 				return null;
+			Logger?.Invoke($"Waiting for response.", LoggingType.Info);
 			await responseSemaphore.WaitAsync(cancellationToken);
+			Logger?.Invoke($"Response received..", LoggingType.Info);
 			_responseSemaphores.TryRemove(message.ConnectionId, out _);
 			var apiResponse = JsonSerializer.Deserialize<ApiResponseL3<T>>(responseSemaphore.Response.Information);
 			return apiResponse;
@@ -90,8 +117,11 @@ namespace NSQM.Data.Networking
 
 		public async Task Close()
 		{
-			if (_webSocket.State != WebSocketState.Aborted)
+			if (_webSocket.State != WebSocketState.Closed && _webSocket.State != WebSocketState.Aborted)
+			{
+				Logger?.Invoke($"Closing websocket output.", LoggingType.Info);
 				await _webSocket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, null, CancellationToken.None);
+			}
 			Disconnected?.Invoke(Id);
 			Dispose();
 		}
@@ -123,6 +153,8 @@ namespace NSQM.Data.Networking
 			{
 				semaphore.Value.Release();
 			}
+
+			Logger?.Invoke($"NSQMWebSocket disposed.", LoggingType.Info);
 		}
 	}
 }

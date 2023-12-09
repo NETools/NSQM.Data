@@ -12,6 +12,7 @@ namespace NSQM.Data.Messages
 	{
 		Subscribe,
 		Task,
+		TaskStream,
 		Info,
 		Ack
 	}

@@ -26,4 +26,11 @@ namespace NSQM.Data.Extensions
 		Accepted,
 		Rejected
 	}
+
+	public enum LoggingType
+	{
+		Info,
+		Error,
+		Warning
+	}
 }
